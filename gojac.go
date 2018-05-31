@@ -54,6 +54,49 @@ func Load(path string) (*ExecutionData, error) {
 	}
 }
 
+func Write(path string, data ExecutionData) error {
+	file, err := os.Open(path)
+
+	if err != nil {
+		return err
+	}
+
+	defer file.Close()
+
+	writer := bufio.NewWriter(file)
+	writeHeader(writer, data.Version)
+
+	for _, session := range data.Sessions {
+		writeSessionInfo(writer, session)
+	}
+
+	for _, entry := range data.Entries {
+		writeExecutionEntry(writer, entry)
+	}
+
+	return nil
+}
+
+func writeHeader(writer *bufio.Writer, version int16) {
+	writer.WriteByte(headerMarker)
+	binary.Write(writer, binary.LittleEndian, headerMagicNumber)
+	binary.Write(writer, binary.LittleEndian, version)
+}
+
+func writeSessionInfo(writer *bufio.Writer, info SessionInfo) {
+	writer.WriteByte(sessionInfoMarker)
+	writeString(writer, info.Id)
+	binary.Write(writer, binary.LittleEndian, info.Start.UnixNano()/int64(time.Millisecond))
+	binary.Write(writer, binary.LittleEndian, info.Dump.UnixNano()/int64(time.Millisecond))
+}
+
+func writeExecutionEntry(writer *bufio.Writer, entry ExecutionEntry) {
+	writer.WriteByte(executionEntryMarker)
+	binary.Write(writer, binary.LittleEndian, entry.Id)
+	writeString(writer, entry.Name)
+	writeBooleanArray(writer, entry.Probes)
+}
+
 func readHeader(reader *bufio.Reader) (int16, error) {
 	var magicNumber uint16
 	err := binary.Read(reader, binary.LittleEndian, &magicNumber)
@@ -155,4 +198,38 @@ func readString(reader *bufio.Reader) (string, error) {
 	}
 
 	return string(buffer[:]), nil
+}
+
+func writeString(writer *bufio.Writer, string string) (error) {
+	bytes := []byte(string)
+	bytesNumber := uint16(len(bytes))
+	binary.Write(writer, binary.LittleEndian, bytesNumber)
+	writer.Write(bytes)
+	return nil
+}
+
+func writeBooleanArray(writer *bufio.Writer, array []bool) (error) {
+	arrayLength := int32(len(array))
+	err := binary.Write(writer, binary.LittleEndian, arrayLength)
+	if err != nil {
+		return err
+	}
+
+	var buffer byte = 0
+	var bufferSize uint = 0
+	for _, b := range array {
+		if b {
+			buffer |= 0x01 << bufferSize
+		}
+		bufferSize++
+		if bufferSize == 8 {
+			writer.WriteByte(buffer)
+			buffer = 0
+			bufferSize = 0
+		}
+	}
+	if bufferSize > 0 {
+		writer.WriteByte(buffer)
+	}
+	return nil
 }
