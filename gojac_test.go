@@ -4,9 +4,18 @@ import (
 	"testing"
 	"fmt"
 	"time"
-	"io/ioutil"
 	"reflect"
+	"io/ioutil"
 )
+
+func TestReadMinimalFile(t *testing.T) {
+	loaded, err := Load("fixtures/simple1.exec")
+	if err != nil {
+		fmt.Println(err)
+		t.Fail()
+	}
+	println(loaded)
+}
 
 func TestReadWrite(t *testing.T) {
 	sessionInfo := SessionInfo{
@@ -27,11 +36,13 @@ func TestReadWrite(t *testing.T) {
 
 	tempFile, err := ioutil.TempFile("", "test")
 	if err != nil {
+		fmt.Println(err)
 		t.Fail()
 	}
 
 	err = Write(tempFile.Name(), executionData)
 	if err != nil {
+		fmt.Println(err)
 		t.Fail()
 	}
 
@@ -40,6 +51,6 @@ func TestReadWrite(t *testing.T) {
 		fmt.Println(err)
 		t.Fail()
 	}
-	println(loaded)
+	
 	reflect.DeepEqual(executionData, loaded)
 }

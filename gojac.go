@@ -7,11 +7,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"time"
+	"io"
 )
 
 const (
 	headerMagicNumber    uint16 = 0xC0C0
-	endOfFileMarker      byte   = 0xFF
 	headerMarker         byte   = 0x01
 	sessionInfoMarker    byte   = 0x10
 	executionEntryMarker byte   = 0x11
@@ -31,7 +31,12 @@ func Load(path string) (*ExecutionData, error) {
 	data := &ExecutionData{}
 
 	for {
-		marker, _ := reader.ReadByte()
+		marker, err := reader.ReadByte()
+		if err == io.EOF {
+			return data, nil
+		} else if err != nil {
+			return nil, err
+		}
 
 		switch marker {
 		case headerMarker:
@@ -48,14 +53,12 @@ func Load(path string) (*ExecutionData, error) {
 				return nil, err
 			}
 			data.Entries = append(data.Entries, *entry)
-		case endOfFileMarker:
-			return data, nil
 		}
 	}
 }
 
 func Write(path string, data ExecutionData) error {
-	file, err := os.Open(path)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0666)
 
 	if err != nil {
 		return err
@@ -64,37 +67,99 @@ func Write(path string, data ExecutionData) error {
 	defer file.Close()
 
 	writer := bufio.NewWriter(file)
-	writeHeader(writer, data.Version)
+	err = writeHeader(writer, data.Version)
+	if err != nil {
+		return err
+	}
 
 	for _, session := range data.Sessions {
-		writeSessionInfo(writer, session)
+		err = writeSessionInfo(writer, session)
+
+		if err != nil {
+			return err
+		}
 	}
 
 	for _, entry := range data.Entries {
-		writeExecutionEntry(writer, entry)
+		err = writeExecutionEntry(writer, entry)
+
+		if err != nil {
+			return err
+		}
+	}
+
+	err = writer.Flush()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func writeHeader(writer *bufio.Writer, version int16) error {
+	err := writer.WriteByte(headerMarker)
+	if err != nil {
+		return err
+	}
+
+	binary.Write(writer, binary.LittleEndian, headerMagicNumber)
+	if err != nil {
+		return err
+	}
+
+	binary.Write(writer, binary.LittleEndian, version)
+	if err != nil {
+		return err
 	}
 
 	return nil
 }
 
-func writeHeader(writer *bufio.Writer, version int16) {
-	writer.WriteByte(headerMarker)
-	binary.Write(writer, binary.LittleEndian, headerMagicNumber)
-	binary.Write(writer, binary.LittleEndian, version)
+func writeSessionInfo(writer *bufio.Writer, info SessionInfo) error {
+	err := writer.WriteByte(sessionInfoMarker)
+	if err != nil {
+		return err
+	}
+
+	err = writeString(writer, info.Id)
+	if err != nil {
+		return err
+	}
+
+	err = binary.Write(writer, binary.LittleEndian, info.Start.UnixNano()/int64(time.Millisecond))
+	if err != nil {
+		return err
+	}
+
+	err = binary.Write(writer, binary.LittleEndian, info.Dump.UnixNano()/int64(time.Millisecond))
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
-func writeSessionInfo(writer *bufio.Writer, info SessionInfo) {
-	writer.WriteByte(sessionInfoMarker)
-	writeString(writer, info.Id)
-	binary.Write(writer, binary.LittleEndian, info.Start.UnixNano()/int64(time.Millisecond))
-	binary.Write(writer, binary.LittleEndian, info.Dump.UnixNano()/int64(time.Millisecond))
-}
+func writeExecutionEntry(writer *bufio.Writer, entry ExecutionEntry) error {
+	err := writer.WriteByte(executionEntryMarker)
+	if err != nil {
+		return err
+	}
 
-func writeExecutionEntry(writer *bufio.Writer, entry ExecutionEntry) {
-	writer.WriteByte(executionEntryMarker)
-	binary.Write(writer, binary.LittleEndian, entry.Id)
-	writeString(writer, entry.Name)
-	writeBooleanArray(writer, entry.Probes)
+	err = binary.Write(writer, binary.LittleEndian, entry.Id)
+	if err != nil {
+		return err
+	}
+
+	err = writeString(writer, entry.Name)
+	if err != nil {
+		return err
+	}
+
+	err = writeBooleanArray(writer, entry.Probes)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func readHeader(reader *bufio.Reader) (int16, error) {
@@ -135,23 +200,9 @@ func readEntry(reader *bufio.Reader) (*ExecutionEntry, error) {
 	}
 	entry.Name = name
 
-	var probesCount int32
-	err = binary.Read(reader, binary.LittleEndian, &probesCount)
+	probes, err := readBooleanArray(reader)
 	if err != nil {
 		return nil, err
-	}
-
-	probes := make([]bool, probesCount)
-	var buffer byte = 0x00
-	for i := 0; i < len(probes); i++ {
-		if (i % 8) == 0 {
-			buffer, err = reader.ReadByte()
-			if err != nil {
-				return nil, err
-			}
-		}
-		probes[i] = (buffer & 0x01) != 0
-		buffer = buffer >> 1
 	}
 	entry.Probes = probes
 
@@ -184,9 +235,50 @@ func readSessionInfo(reader *bufio.Reader) (*SessionInfo, error) {
 	return sessionInfo, nil
 }
 
+func readVarInt(reader *bufio.Reader) (int, error) {
+	nextByte, err := reader.ReadByte()
+	if err != nil {
+		return 0, err
+	}
+
+	value := 0xFF & int(nextByte)
+	if (value & 0x80) == 0 {
+		return value, nil
+	}
+
+	nextPart, err := readVarInt(reader)
+	if err != nil {
+		return 0, err
+	}
+
+	return (value & 0x7F) | (nextPart << 7), nil
+}
+
+func readBooleanArray(reader *bufio.Reader) ([]bool, error) {
+	probesCount, err := readVarInt(reader)
+	if err != nil {
+		return nil, err
+	}
+
+	probes := make([]bool, probesCount)
+	var buffer byte = 0x00
+	for i := 0; i < len(probes); i++ {
+		if (i % 8) == 0 {
+			buffer, err = reader.ReadByte()
+			if err != nil {
+				return nil, err
+			}
+		}
+		probes[i] = (buffer & 0x01) != 0
+		buffer = buffer >> 1
+	}
+
+	return probes, nil
+}
+
 func readString(reader *bufio.Reader) (string, error) {
 	var bytesNumber uint16
-	err := binary.Read(reader, binary.LittleEndian, &bytesNumber)
+	err := binary.Read(reader, binary.BigEndian, &bytesNumber)
 	if err != nil {
 		return "", err
 	}
@@ -203,14 +295,14 @@ func readString(reader *bufio.Reader) (string, error) {
 func writeString(writer *bufio.Writer, string string) (error) {
 	bytes := []byte(string)
 	bytesNumber := uint16(len(bytes))
-	binary.Write(writer, binary.LittleEndian, bytesNumber)
+	binary.Write(writer, binary.BigEndian, bytesNumber)
 	writer.Write(bytes)
 	return nil
 }
 
 func writeBooleanArray(writer *bufio.Writer, array []bool) (error) {
-	arrayLength := int32(len(array))
-	err := binary.Write(writer, binary.LittleEndian, arrayLength)
+	arrayLength := len(array)
+	err := writeVarInt(writer, arrayLength)
 	if err != nil {
 		return err
 	}
@@ -230,6 +322,23 @@ func writeBooleanArray(writer *bufio.Writer, array []bool) (error) {
 	}
 	if bufferSize > 0 {
 		writer.WriteByte(buffer)
+	}
+	return nil
+}
+
+func writeVarInt(writer *bufio.Writer, value int) error {
+	if (value & 0xFFFFFF80) == 0 {
+		err := writer.WriteByte(byte(value))
+		if err != nil {
+			return err
+		}
+	} else {
+		err := writer.WriteByte(byte(0x80 | (value & 0x7F)))
+		if err != nil {
+			return err
+		}
+		value = value >> 7
+		writeVarInt(writer, value)
 	}
 	return nil
 }
