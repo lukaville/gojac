@@ -17,7 +17,7 @@ const (
 	executionEntryMarker byte   = 0x11
 )
 
-func Load(path string) (*ExecutionData, error) {
+func Read(path string) (*ExecutionData, error) {
 	file, err := os.Open(path)
 
 	if err != nil {

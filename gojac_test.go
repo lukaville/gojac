@@ -9,12 +9,14 @@ import (
 )
 
 func TestReadMinimalFile(t *testing.T) {
-	loaded, err := Load("fixtures/simple1.exec")
+	loaded, err := Read("fixtures/simple1.exec")
 	if err != nil {
 		fmt.Println(err)
 		t.Fail()
 	}
-	println(loaded)
+	if len(loaded.Entries) != 0 {
+		t.Fail()
+	}
 }
 
 func TestReadWrite(t *testing.T) {
@@ -46,7 +48,7 @@ func TestReadWrite(t *testing.T) {
 		t.Fail()
 	}
 
-	loaded, err := Load(tempFile.Name())
+	loaded, err := Read(tempFile.Name())
 	if err != nil {
 		fmt.Println(err)
 		t.Fail()
